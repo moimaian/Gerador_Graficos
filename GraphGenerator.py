@@ -22,6 +22,7 @@ matplotlib.use("Qt5Agg")
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
+from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT
 
 try:
     import seaborn as sns
@@ -402,7 +403,7 @@ def plot_area(df: pd.DataFrame, dpi: int, trendline: bool, title: str, xlabel: s
     return fig
 
 
-def plot_box(df: pd.DataFrame, dpi: int, trendline: bool, title: str, xlabel: str = "", ylabel: str = "", label_mark: bool = False,
+def plot_box(df: pd.DataFrame, dpi: int, trendline: bool, label_mark: bool, title: str, xlabel: str = "", ylabel: str = "",
              color_mode: str = "Palette (multi-color)",
              palette_name: str = "Dark2",
              single_color: str = "#1f77b4"):
@@ -411,7 +412,24 @@ def plot_box(df: pd.DataFrame, dpi: int, trendline: bool, title: str, xlabel: st
     fig, ax = plt.subplots(figsize=(12, 6))
 
     data = [ydf[c].dropna().to_numpy(dtype=float) for c in ydf.columns]
-    bp = ax.boxplot(data, labels=[str(c) for c in ydf.columns], patch_artist=True)
+    bp = ax.boxplot(
+        data,
+        labels=[str(c) for c in ydf.columns],
+        patch_artist=True,
+        medianprops=dict(color="#222222", linewidth=1),   # ← mediana cinza escuro
+        whiskerprops=dict(color="#222222", linewidth=1.5),
+        capprops=dict(color="#222222", linewidth=1.5),
+        boxprops=dict(edgecolor="#222222", linewidth=1.5),
+        flierprops=dict(
+            marker="o",
+            markerfacecolor="yellow",
+            markeredgecolor="darkred",
+            markeredgewidth=1.5,
+            markersize=6,
+            alpha=1
+        )
+    )
+
     if label_mark:
         x_offset = 0.1  # deslocamento horizontal para a direita
 
@@ -467,7 +485,7 @@ def plot_box(df: pd.DataFrame, dpi: int, trendline: bool, title: str, xlabel: st
                 ax.text(
                     x_pos, y0, f"{_fmt_val(y0)}",
                     ha="left", va="center",
-                    fontsize=9, color="black"
+                    fontsize=10, color="darkred", fontweight="bold"
                 )
 
     if color_mode.startswith("Single"):
@@ -490,7 +508,7 @@ def plot_box(df: pd.DataFrame, dpi: int, trendline: bool, title: str, xlabel: st
     return fig
 
 
-def plot_heatmap(df: pd.DataFrame, dpi: int, trendline: bool, title: str, xlabel: str = "", ylabel: str = "",
+def plot_heatmap(df: pd.DataFrame, dpi: int, trendline: bool, label_mark: bool, title: str, xlabel: str = "", ylabel: str = "",
                  color_mode: str = "Palette (multi-color)",
                  palette_name: str = "viridis",
                  single_color: str = "#1f77b4"):
@@ -531,6 +549,36 @@ PLOTTERS = {
     "Heatmap": plot_heatmap,
 }
 
+class DpiNavigationToolbar(NavigationToolbar2QT):
+    def __init__(self, canvas, parent=None, dpi=300):
+        self._export_dpi = int(dpi)
+        super().__init__(canvas, parent)
+
+    def set_export_dpi(self, dpi: int):
+        self._export_dpi = int(dpi)
+
+    def save_figure(self, *args):
+        # diálogo igual ao toolbar, mas com dpi garantido
+        filetypes = (
+            "PNG (*.png);;JPG (*.jpg);;TIFF (*.tiff);;PDF (*.pdf);;EPS (*.eps);;SVG (*.svg);;All files (*.*)"
+        )
+        path, _ = QFileDialog.getSaveFileName(self.parent(), "Save chart", "chart.png", filetypes)
+        if not path:
+            return
+
+        ext = os.path.splitext(path)[1].lower().replace(".", "")
+        if ext not in ("png", "jpg", "tiff", "pdf", "eps", "svg"):
+            # se o usuário não colocou extensão, assume png
+            path = path + ".png"
+            ext = "png"
+
+        try:
+            # dpi só importa para raster
+            dpi = self._export_dpi if ext in ("png", "jpg", "tiff") else None
+            self.canvas.figure.savefig(path, dpi=dpi)
+            QMessageBox.information(self.parent(), "Saved", f"File saved to:\n{path}")
+        except Exception as e:
+            QMessageBox.critical(self.parent(), "Save error", str(e))
 
 class PlotViewer(QMainWindow):
     def __init__(self, fig, dpi=300, parent=None):
@@ -539,35 +587,23 @@ class PlotViewer(QMainWindow):
         self.resize(1000, 650)
 
         self.fig = fig
-        self.dpi = dpi
+        self.dpi = int(dpi)
+
         self.canvas = FigureCanvas(self.fig)
         self.setCentralWidget(self.canvas)
 
-        # Default matplotlib navigation toolbar
-        self.addToolBar(NavigationToolbar(self.canvas, self))
+        # Toolbar customizado (salva com dpi correto)
+        self.nav = DpiNavigationToolbar(self.canvas, self, dpi=self.dpi)
+        self.addToolBar(self.nav)
 
-        # Save toolbar
-        tb = QToolBar("Save", self)
-        self.addToolBar(tb)
+        self._update_info()
 
-        act_png = QAction("Save .png", self)
-        act_svg = QAction("Save .svg", self)
-        act_tiff = QAction("Save .tiff", self)
-        act_jpg = QAction("Save .jpg", self)
-        act_saveas = QAction("Save as…", self)
-
-        act_png.triggered.connect(lambda: self.save_as("png"))
-        act_svg.triggered.connect(lambda: self.save_as("svg"))
-        act_tiff.triggered.connect(lambda: self.save_as("tiff"))
-        act_jpg.triggered.connect(lambda: self.save_as("jpg"))
-        act_saveas.triggered.connect(self.save_as_dialog)
-
-        tb.addAction(act_png)
-        tb.addAction(act_svg)
-        tb.addAction(act_tiff)
-        tb.addAction(act_jpg)
-        tb.addSeparator()
-        tb.addAction(act_saveas)
+    def _update_info(self):
+        w_in = float(self.fig.get_figwidth())
+        h_in = float(self.fig.get_figheight())
+        w_px = int(round(w_in * self.dpi))
+        h_px = int(round(h_in * self.dpi))
+        self.statusBar().showMessage(f"DPI = {self.dpi}  /  Resolution = {w_px} x {h_px} px")
 
     def save_as(self, ext: str):
         suggested = f"chart.{ext}"
